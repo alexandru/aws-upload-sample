@@ -1,0 +1,17 @@
+NOTES
+private/
+logs
+project/project
+project/target
+target
+.history
+dist
+/.idea
+/*.iml
+/out
+/.idea_modules
+/.classpath
+/.project
+/RUNNING_PID
+/.settings
+*.swp
