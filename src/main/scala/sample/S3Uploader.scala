@@ -4,44 +4,39 @@ import java.io.File
 
 import com.amazonaws.auth.BasicAWSCredentials
 import com.amazonaws.event.ProgressEventType._
-import com.amazonaws.event.{ProgressEvent, SyncProgressListener}
+import com.amazonaws.event.{ProgressEvent, ProgressListener}
 import com.amazonaws.services.s3.AmazonS3Client
 import com.amazonaws.services.s3.transfer.TransferManager
-import scala.concurrent.{ExecutionContext, Future, Promise}
+import com.amazonaws.services.s3.transfer.model.UploadResult
+import scala.concurrent.{ExecutionContext, Future, Promise, blocking}
+import scala.util.Try
 import scala.util.control.NonFatal
 
 
 final class S3Uploader(config: AWSS3Config, io: ExecutionContext) {
-  def upload(key: String, file: File): Future[Unit] = {
-    val p = Promise[Unit]()
+  def upload(key: String, file: File): Future[UploadResult] = {
+    val p = Promise[UploadResult]()
 
-    io.execute(new Runnable {
-      def run() = {
-        try {
-          // call is blocking, shows up in profiling
-          val request = manager.upload(config.bucketName, key, file)
+    try {
+      val request = manager.upload(config.bucketName, key, file)
 
-          request.addProgressListener(new SyncProgressListener {
-            def progressChanged(e: ProgressEvent) = {
-              e.getEventType match {
-                case TRANSFER_COMPLETED_EVENT =>
-                  p.trySuccess(())
-                case TRANSFER_FAILED_EVENT =>
-                  p.tryFailure(new UploadFailedException(key, e))
-                case TRANSFER_CANCELED_EVENT =>
-                  p.tryFailure(new UploadCancelledException(key))
-                case _ =>
-                  () // ignore
-              }
-            }
-          })
+      request.addProgressListener(new ProgressListener {
+        def progressChanged(e: ProgressEvent) = {
+          e.getEventType match {
+            case TRANSFER_COMPLETED_EVENT | TRANSFER_FAILED_EVENT =>
+              p.tryComplete(Try(blocking(request.waitForUploadResult())))
+            case TRANSFER_CANCELED_EVENT =>
+              p.tryFailure(new UploadCancelledException(key))
+            case _ =>
+              () // ignore
+          }
         }
-        catch {
-          case NonFatal(ex) =>
-            Future.failed(ex)
-        }
-      }
-    })
+      })
+    }
+    catch {
+      case NonFatal(ex) =>
+        Future.failed(ex)
+    }
 
     p.future
   }
@@ -54,12 +49,6 @@ final class S3Uploader(config: AWSS3Config, io: ExecutionContext) {
    * Thrown when an upload is canceled.
    */
   class UploadCancelledException(key: String) extends RuntimeException(key)
-
-  /**
-   * Thrown when an upload fails.
-   */
-  class UploadFailedException(key: String, event: ProgressEvent)
-    extends RuntimeException(s"Upload for $key failed, signaled with $event")
 
   private val (s3Client, manager) = {
     val credentials = new BasicAWSCredentials(
